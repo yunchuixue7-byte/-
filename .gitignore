@@ -1,0 +1,21 @@
+# 构建输出
+bin/
+obj/
+*.user
+*.suo
+.vs/
+
+# 本地工具与临时目录
+.tmp/
+.tools/
+.acl-repair/
+
+# 临时产物
+pptx_text.txt
+temp_extract_pptx.py
+cordis.patch.yml.fixed
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
