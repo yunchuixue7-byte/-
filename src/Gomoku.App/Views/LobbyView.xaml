@@ -1,0 +1,9 @@
+<UserControl x:Class="Gomoku.App.Views.LobbyView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- TODO(M4)：创建/加入房间、等待对手 -->
+    <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+        <Button Content="创建房间" Width="160" Height="40" Margin="0,8"/>
+        <Button Content="加入房间" Width="160" Height="40" Margin="0,8"/>
+    </StackPanel>
+</UserControl>
