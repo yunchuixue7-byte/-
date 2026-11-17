@@ -15,6 +15,13 @@ public static class GameProtocol
     public const string Leave = "leave";
     public const string Heartbeat = "heartbeat";
 
+    // 账号与匹配
+    public const string Register = "register";
+    public const string Login = "login";
+    public const string Logout = "logout";
+    public const string QuickMatch = "quick_match";
+    public const string CancelMatch = "cancel_match";
+
     // 服务端 → 客户端
     public const string RoomCreated = "room_created";
     public const string RoomJoined = "room_joined";
@@ -24,6 +31,13 @@ public static class GameProtocol
     public const string GameOver = "game_over";
     public const string OpponentLeft = "opponent_left";
     public const string Error = "error";
+
+    // 账号与匹配（下行）
+    public const string AuthOk = "auth_ok";
+    public const string AuthFail = "auth_fail";
+    public const string LoggedOut = "logged_out";
+    public const string MatchWaiting = "match_waiting";
+    public const string MatchCanceled = "match_canceled";
 
     /// <summary>
     /// 把一条消息编码成单行 JSON：{"type":"move","payload":{"row":9,"col":9}}。

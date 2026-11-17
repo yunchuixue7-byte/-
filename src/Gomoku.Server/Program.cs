@@ -11,6 +11,7 @@ namespace Gomoku.Server;
 /// <summary>
 /// 联机服务器入口：监听 TCP 端口，每个连接一个会话，消息按房间转发。
 /// 服务端持有权威棋盘，落子合法性、胜负与平局都由此判定，客户端只负责显示。
+/// 账号与战绩落 SQLite，匹配按胜率撮合。
 /// </summary>
 public static class Program
 {
@@ -24,21 +25,28 @@ public static class Program
             port = parsed;
         }
 
+        string dbPath = args.Length > 1
+            ? args[1]
+            : Path.Combine(AppContext.BaseDirectory, "gomoku.db");
+
         var service = new RoomService();
+        var accounts = new AccountStore(dbPath);
+
         var listener = new TcpListener(IPAddress.Any, port);
         listener.Start();
         Console.WriteLine($"Gomoku.Server 已启动，监听端口 {port}（按 Ctrl+C 退出）");
+        Console.WriteLine($"账号库：{dbPath}");
 
         while (true)
         {
             TcpClient tcp = await listener.AcceptTcpClientAsync();
             tcp.NoDelay = true;
-            _ = Task.Run(() => HandleClientAsync(tcp, service));
+            _ = Task.Run(() => HandleClientAsync(tcp, service, accounts));
         }
     }
 
     /// <summary>单个连接的生命周期：逐行读取消息，断开时清理房间并向对手广播。</summary>
-    private static async Task HandleClientAsync(TcpClient tcp, RoomService service)
+    private static async Task HandleClientAsync(TcpClient tcp, RoomService service, AccountStore accounts)
     {
         using var session = new ClientSession(tcp);
         try
@@ -57,7 +65,7 @@ public static class Program
                     continue;
                 }
 
-                HandleMessage(session, message, service);
+                HandleMessage(session, message, service, accounts);
             }
         }
         catch (IOException)
@@ -75,10 +83,25 @@ public static class Program
     }
 
     /// <summary>按消息类型分发；涉及棋局的操作都在房间锁内完成，避免两侧同时落子。</summary>
-    private static void HandleMessage(ClientSession session, NetworkMessage message, RoomService service)
+    private static void HandleMessage(ClientSession session, NetworkMessage message, RoomService service, AccountStore accounts)
     {
         switch (message.Type)
         {
+            case GameProtocol.Register:
+                Register(session, message, accounts);
+                break;
+            case GameProtocol.Login:
+                Login(session, message, accounts);
+                break;
+            case GameProtocol.Logout:
+                Logout(session, service);
+                break;
+            case GameProtocol.QuickMatch:
+                QuickMatch(session, service);
+                break;
+            case GameProtocol.CancelMatch:
+                CancelMatch(session, service);
+                break;
             case GameProtocol.CreateRoom:
                 CreateRoom(session, service);
                 break;
@@ -86,13 +109,13 @@ public static class Program
                 JoinRoom(session, message, service);
                 break;
             case GameProtocol.Move:
-                ApplyMove(session, message, service);
+                ApplyMove(session, message, service, accounts);
                 break;
             case GameProtocol.Restart:
                 Restart(session, service);
                 break;
             case GameProtocol.Resign:
-                Resign(session, service);
+                Resign(session, service, accounts);
                 break;
             case GameProtocol.Leave:
                 Leave(session, service);
@@ -106,6 +129,161 @@ public static class Program
         }
     }
 
+    // ---------- 账号 ----------
+
+    private static void Register(ClientSession session, NetworkMessage message, AccountStore accounts)
+    {
+        if (session.RoomCode is not null)
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("对局中不能注册，请先离开房间"));
+            return;
+        }
+
+        if (session.Nickname is not null)
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("已登录，请先退出登录"));
+            return;
+        }
+
+        string? name = GameProtocol.GetString(message, "user");
+        string? pass = GameProtocol.GetString(message, "pass");
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(pass))
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("请输入用户名和密码"));
+            return;
+        }
+
+        Account? account = accounts.Register(name, pass, out string error);
+        if (account is null)
+        {
+            session.Send(GameProtocol.AuthFail, ErrorPayload(error));
+            return;
+        }
+
+        ApplyAccount(session, account);
+        session.Send(GameProtocol.AuthOk, AccountPayload(account));
+    }
+
+    private static void Login(ClientSession session, NetworkMessage message, AccountStore accounts)
+    {
+        if (session.RoomCode is not null)
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("对局中不能登录，请先离开房间"));
+            return;
+        }
+
+        if (session.Nickname is not null)
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("已登录，请先退出登录"));
+            return;
+        }
+
+        string? name = GameProtocol.GetString(message, "user");
+        string? pass = GameProtocol.GetString(message, "pass");
+        if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(pass))
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("请输入用户名和密码"));
+            return;
+        }
+
+        Account? account = accounts.Login(name, pass, out string error);
+        if (account is null)
+        {
+            session.Send(GameProtocol.AuthFail, ErrorPayload(error));
+            return;
+        }
+
+        ApplyAccount(session, account);
+        session.Send(GameProtocol.AuthOk, AccountPayload(account));
+    }
+
+    private static void Logout(ClientSession session, RoomService service)
+    {
+        service.LeavePool(session);
+        session.Nickname = null;
+        session.Wins = 0;
+        session.Losses = 0;
+        session.Draws = 0;
+        session.Send(GameProtocol.LoggedOut);
+    }
+
+    private static void ApplyAccount(ClientSession session, Account account)
+    {
+        session.Nickname = account.Name;
+        session.Wins = account.Wins;
+        session.Losses = account.Losses;
+        session.Draws = account.Draws;
+    }
+
+    private static Dictionary<string, object?> AccountPayload(Account account)
+        => new()
+        {
+            ["user"] = account.Name,
+            ["wins"] = account.Wins,
+            ["losses"] = account.Losses,
+            ["draws"] = account.Draws,
+            ["rate"] = Math.Round(account.WinRate * 100)
+        };
+
+    // ---------- 匹配 ----------
+
+    private static void QuickMatch(ClientSession session, RoomService service)
+    {
+        if (session.RoomCode is not null)
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("你已在房间中，请先离开"));
+            return;
+        }
+
+        Room? room = service.TryMatch(session, out _);
+        if (room is null)
+        {
+            session.Send(GameProtocol.MatchWaiting, new Dictionary<string, object?>
+            {
+                ["message"] = session.IsGuest
+                    ? "已进入游客匹配队列，等待另一位游客…"
+                    : "正在按胜率寻找对手…"
+            });
+            return;
+        }
+
+        lock (room)
+        {
+            room.ResetGame();
+            room.Started = true;
+            NotifyStart(room);
+        }
+    }
+
+    private static void CancelMatch(ClientSession session, RoomService service)
+    {
+        bool removed = service.LeavePool(session);
+        session.Send(GameProtocol.MatchCanceled, new Dictionary<string, object?>
+        {
+            ["removed"] = removed
+        });
+    }
+
+    /// <summary>给房间双方各发一条开局消息，带上自己的执子颜色与双方昵称。</summary>
+    private static void NotifyStart(Room room)
+    {
+        NotifyStartTo(room, room.Black);
+        NotifyStartTo(room, room.White);
+    }
+
+    private static void NotifyStartTo(Room room, ClientSession? target)
+    {
+        target?.Send(GameProtocol.GameStarted, new Dictionary<string, object?>
+        {
+            ["color"] = target.Color,
+            ["black"] = room.Black?.DisplayName ?? "游客",
+            ["white"] = room.White?.DisplayName ?? "游客",
+            ["blackFirst"] = true
+        });
+    }
+
+    // ---------- 房间 ----------
+
     private static void CreateRoom(ClientSession session, RoomService service)
     {
         if (session.RoomCode is not null)
@@ -114,11 +292,13 @@ public static class Program
             return;
         }
 
+        service.LeavePool(session);
         string code = service.CreateRoom(session);
         session.Send(GameProtocol.RoomCreated, new Dictionary<string, object?>
         {
             ["room"] = code,
-            ["color"] = 0
+            ["color"] = 0,
+            ["name"] = session.DisplayName
         });
     }
 
@@ -137,6 +317,7 @@ public static class Program
             return;
         }
 
+        service.LeavePool(session);
         Room? room = service.TryJoin(raw.Trim(), session, out string error);
         if (room is null)
         {
@@ -154,14 +335,11 @@ public static class Program
         {
             room.ResetGame();
             room.Started = true;
-            MessageBroadcaster.Broadcast(room, GameProtocol.GameStarted, new Dictionary<string, object?>
-            {
-                ["blackFirst"] = true
-            });
+            NotifyStart(room);
         }
     }
 
-    private static void ApplyMove(ClientSession session, NetworkMessage message, RoomService service)
+    private static void ApplyMove(ClientSession session, NetworkMessage message, RoomService service, AccountStore accounts)
     {
         Room? room = service.FindBySession(session);
         if (room is null)
@@ -192,6 +370,7 @@ public static class Program
 
             bool win = GameRules.IsWinningMove(room.Board, position, stone);
             bool full = GameRules.IsBoardFull(room.Board);
+            string reason = "five";
             if (win)
             {
                 room.Finished = true;
@@ -201,6 +380,12 @@ public static class Program
             {
                 room.Finished = true;
                 room.Winner = -1;
+                reason = "full";
+            }
+
+            if (room.Finished)
+            {
+                RecordResult(room, accounts, reason);
             }
 
             MessageBroadcaster.Broadcast(room, GameProtocol.MoveApplied, new Dictionary<string, object?>
@@ -237,7 +422,7 @@ public static class Program
         }
     }
 
-    private static void Resign(ClientSession session, RoomService service)
+    private static void Resign(ClientSession session, RoomService service, AccountStore accounts)
     {
         Room? room = service.FindBySession(session);
         if (room is null)
@@ -258,6 +443,7 @@ public static class Program
             room.Finished = true;
             room.ResignedBy = session.Color;
             room.Winner = 1 - session.Color;
+            RecordResult(room, accounts, "resign");
             MessageBroadcaster.Broadcast(room, GameProtocol.GameOver, new Dictionary<string, object?>
             {
                 ["winner"] = room.Winner,
@@ -267,8 +453,41 @@ public static class Program
         }
     }
 
+    /// <summary>一局结束后写库：游客不记账号计数，但仍记入对局明细；同时刷新会话内胜率。</summary>
+    private static void RecordResult(Room room, AccountStore accounts, string reason)
+    {
+        if (room.Black is null || room.White is null)
+        {
+            return;
+        }
+
+        accounts.RecordResult(
+            room.Black.IsGuest ? null : room.Black.Nickname,
+            room.White.IsGuest ? null : room.White.Nickname,
+            room.Winner,
+            reason);
+
+        switch (room.Winner)
+        {
+            case 0:
+                room.Black.Wins++;
+                room.White.Losses++;
+                break;
+            case 1:
+                room.White.Wins++;
+                room.Black.Losses++;
+                break;
+            default:
+                room.Black.Draws++;
+                room.White.Draws++;
+                break;
+        }
+    }
+
     private static void Leave(ClientSession session, RoomService service)
     {
+        service.LeavePool(session);
+
         Room? room = service.FindBySession(session);
         if (room is null)
         {
@@ -281,9 +500,11 @@ public static class Program
         opponent?.Send(GameProtocol.OpponentLeft, ErrorPayload("对手已离开房间"));
     }
 
-    /// <summary>连接断开：清房间并通知对手。</summary>
+    /// <summary>连接断开：移出匹配池、清房间并通知对手。</summary>
     private static void HandleDisconnect(ClientSession session, RoomService service)
     {
+        service.LeavePool(session);
+
         Room? room = service.FindBySession(session);
         if (room is null)
         {

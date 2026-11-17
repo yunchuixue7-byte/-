@@ -31,6 +31,23 @@ public sealed class ClientSession : IDisposable
     /// <summary>所在房间编号；null 表示未进房间。</summary>
     public string? RoomCode { get; set; }
 
+    /// <summary>登录用户名；null 表示游客（不记战绩、不进账号匹配池）。</summary>
+    public string? Nickname { get; set; }
+
+    public int Wins { get; set; }
+
+    public int Losses { get; set; }
+
+    public int Draws { get; set; }
+
+    public bool IsGuest => Nickname is null;
+
+    /// <summary>胜率；没打过棋的按 50% 计，与 Account 保持一致。</summary>
+    public double WinRate => Wins + Losses == 0 ? 0.5 : (double)Wins / (Wins + Losses);
+
+    /// <summary>对外展示的名字：登录用户显示用户名，游客显示"游客"。</summary>
+    public string DisplayName => Nickname ?? "游客";
+
     /// <summary>发送一条消息；连接已关闭时返回 false。</summary>
     public bool Send(string type, IReadOnlyDictionary<string, object?>? payload = null)
     {
@@ -133,6 +150,7 @@ public sealed class Room
 public sealed class RoomService
 {
     private readonly Dictionary<string, Room> _rooms = new();
+    private readonly List<ClientSession> _matchPool = new();
     private readonly object _gate = new();
     private readonly Random _random = new();
 
@@ -141,19 +159,81 @@ public sealed class RoomService
     {
         lock (_gate)
         {
-            string code;
-            do
-            {
-                code = _random.Next(1000, 10000).ToString();
-            }
-            while (_rooms.ContainsKey(code));
-
+            string code = NextCode();
             var room = new Room(code) { Black = host };
             host.Color = 0;
             host.RoomCode = code;
             _rooms[code] = room;
             return code;
         }
+    }
+
+    /// <summary>
+    /// 把会话放入匹配池并尝试撮合：登录用户按胜率最接近配对，游客按先来先配。
+    /// 配对成功返回新房间（partner 为对手），无人可配时返回 null，会话留在池中等待。
+    /// </summary>
+    public Room? TryMatch(ClientSession session, out ClientSession? partner)
+    {
+        partner = null;
+        lock (_gate)
+        {
+            _matchPool.Remove(session); // 重复点匹配时不重复入池
+
+            ClientSession? best = null;
+            double bestGap = double.MaxValue;
+            foreach (ClientSession other in _matchPool)
+            {
+                if (other.IsGuest != session.IsGuest)
+                {
+                    continue; // 游客与账号分开匹配，胜率无从比较
+                }
+
+                double gap = session.IsGuest ? 0 : Math.Abs(session.WinRate - other.WinRate);
+                if (gap < bestGap)
+                {
+                    bestGap = gap;
+                    best = other;
+                }
+            }
+
+            if (best is null)
+            {
+                _matchPool.Add(session);
+                return null;
+            }
+
+            _matchPool.Remove(best);
+            partner = best;
+
+            string code = NextCode();
+            var room = new Room(code) { Black = best, White = session };
+            best.Color = 0;
+            best.RoomCode = code;
+            session.Color = 1;
+            session.RoomCode = code;
+            _rooms[code] = room;
+            return room;
+        }
+    }
+
+    /// <summary>把会话移出匹配池；返回是否原本在池中。</summary>
+    public bool LeavePool(ClientSession session)
+    {
+        lock (_gate)
+        {
+            return _matchPool.Remove(session);
+        }
+    }
+
+    private string NextCode()
+    {
+        string code;
+        do
+        {
+            code = _random.Next(1000, 10000).ToString();
+        }
+        while (_rooms.ContainsKey(code));
+        return code;
     }
 
     /// <summary>加入房间，加入者执白；房间不存在、已满或对局已开始时返回 null。</summary>

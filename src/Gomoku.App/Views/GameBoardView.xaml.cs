@@ -50,6 +50,7 @@ public partial class GameBoardView : UserControl
 
     // 联机对战：连接由大厅移交，落子先发服务器、收到确认后再落子
     private readonly GameClient? _online;
+    private readonly string? _onlineOpponent;
     private bool _onlinePending;
     private bool _onlineClosed;
 
@@ -78,11 +79,12 @@ public partial class GameBoardView : UserControl
         public double X, Y, Vx, Vy, Life, MaxLife;
     }
 
-    public GameBoardView(GameController controller, string boardMaterial = "wood", bool videoBackground = false, GameClient? online = null)
+    public GameBoardView(GameController controller, string boardMaterial = "wood", bool videoBackground = false, GameClient? online = null, string? opponentName = null)
     {
         InitializeComponent();
         _controller = controller;
         _online = online;
+        _onlineOpponent = opponentName;
         _boardStyle = videoBackground ? "video" : boardMaterial;
         _boardMaterial = boardMaterial;
         if (_online is not null)
@@ -680,7 +682,8 @@ public partial class GameBoardView : UserControl
             }
             else if (_controller.Mode == GameMode.Online)
             {
-                TurnText.Text = "联机对战 · " + (_controller.CurrentPlayer == _controller.HumanColor ? "轮到你落子" : "等待对手落子");
+                string opponent = string.IsNullOrEmpty(_onlineOpponent) ? string.Empty : $"对 {_onlineOpponent} · ";
+                TurnText.Text = $"联机对战 · {opponent}" + (_controller.CurrentPlayer == _controller.HumanColor ? "轮到你落子" : "等待对手落子");
                 if (!_onlinePending && !_onlineClosed)
                 {
                     StatusText.Text = string.Empty;
