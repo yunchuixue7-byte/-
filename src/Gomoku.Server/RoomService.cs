@@ -34,6 +34,9 @@ public sealed class ClientSession : IDisposable
     /// <summary>登录用户名；null 表示游客（不记战绩、不进账号匹配池）。</summary>
     public string? Nickname { get; set; }
 
+    /// <summary>本次登录签发的令牌；退出登录时作废。</summary>
+    public string? Token { get; set; }
+
     public int Wins { get; set; }
 
     public int Losses { get; set; }

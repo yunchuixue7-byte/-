@@ -128,6 +128,73 @@
             </StackPanel>
         </StackPanel>
 
+        <!-- 账号栏：未登录显示游客，点击进入登录面板；已登录显示昵称与战绩 -->
+        <Border HorizontalAlignment="Right" VerticalAlignment="Top" Margin="0,44,48,0"
+                Background="#E6FFFFFF" CornerRadius="12" Padding="14,9,10,9"
+                BorderBrush="#B08D63" BorderThickness="1">
+            <StackPanel Orientation="Horizontal">
+                <TextBlock x:Name="AccountText" Text="游客 · 战绩不保存"
+                           FontFamily="./Assets/Fonts/#Zhi Mang Xing" FontSize="15" Foreground="#4A3728"
+                           VerticalAlignment="Center"/>
+                <Button x:Name="AccountButton" Content="登录 / 注册" Width="104" Height="27" FontSize="12"
+                        FontFamily="./Assets/Fonts/#Zhi Mang Xing" Click="Account_Click" Margin="12,0,0,0"/>
+            </StackPanel>
+        </Border>
+
+        <!-- 账号登录 / 注册面板 -->
+        <Border x:Name="LoginPanel" Visibility="Collapsed" Background="#F2F4E6CB" CornerRadius="16"
+                HorizontalAlignment="Center" VerticalAlignment="Center" Width="392" Padding="30,24,30,22"
+                BorderBrush="#8A6D4F" BorderThickness="2">
+            <StackPanel>
+                <TextBlock Text="账号登录" FontFamily="./Assets/Fonts/#Zhi Mang Xing" FontSize="28" Foreground="#4A3728"
+                           HorizontalAlignment="Center" Margin="0,0,0,4"/>
+                <TextBlock Text="登录后战绩会保存，界面设置按账号单独保存" FontSize="12" Foreground="#8A6D4F"
+                           HorizontalAlignment="Center" Margin="0,0,0,18"/>
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="62"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="服务器" FontFamily="./Assets/Fonts/#Zhi Mang Xing" FontSize="15" Foreground="#4A3728"
+                               VerticalAlignment="Center"/>
+                    <TextBox x:Name="ServerBox" Grid.Column="1" Height="30" VerticalContentAlignment="Center"
+                             Text="127.0.0.1:9527" ToolTip="主机:端口，异地联机时填对方 IP 或 Tailscale 地址"/>
+                </Grid>
+
+                <Grid Margin="0,0,0,10">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="62"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="用户名" FontFamily="./Assets/Fonts/#Zhi Mang Xing" FontSize="15" Foreground="#4A3728"
+                               VerticalAlignment="Center"/>
+                    <TextBox x:Name="UserBox" Grid.Column="1" Height="30" VerticalContentAlignment="Center" MaxLength="16"/>
+                </Grid>
+
+                <Grid Margin="0,0,0,4">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="62"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Text="密码" FontFamily="./Assets/Fonts/#Zhi Mang Xing" FontSize="15" Foreground="#4A3728"
+                               VerticalAlignment="Center"/>
+                    <PasswordBox x:Name="PassBox" Grid.Column="1" Height="30" VerticalContentAlignment="Center" MaxLength="32"/>
+                </Grid>
+
+                <TextBlock x:Name="LoginStatus" Text="" FontSize="12" Foreground="#A05252"
+                           HorizontalAlignment="Center" Margin="0,10,0,0" TextWrapping="Wrap" MaxWidth="330"/>
+
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,16,0,0">
+                    <Button x:Name="LoginButton" Content="登录" Width="96" Height="38" FontSize="15"
+                            Click="DoLogin_Click" Margin="0,0,12,0"/>
+                    <Button x:Name="RegisterButton" Content="注册" Width="96" Height="38" FontSize="15"
+                            Click="DoRegister_Click" Margin="0,0,12,0"/>
+                    <Button Content="取消" Width="72" Height="38" FontSize="13" Click="LoginCancel_Click"/>
+                </StackPanel>
+            </StackPanel>
+        </Border>
+
         <!-- 人机对战：选择执子颜色 -->
         <Border x:Name="ColorPickPanel" Visibility="Collapsed" Background="#EAF4E6CB" CornerRadius="16"
                 HorizontalAlignment="Center" VerticalAlignment="Center" Width="400" Padding="28,24,28,22"

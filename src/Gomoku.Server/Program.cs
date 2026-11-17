@@ -93,8 +93,11 @@ public static class Program
             case GameProtocol.Login:
                 Login(session, message, accounts);
                 break;
+            case GameProtocol.LoginToken:
+                LoginByToken(session, message, accounts);
+                break;
             case GameProtocol.Logout:
-                Logout(session, service);
+                Logout(session, service, accounts);
                 break;
             case GameProtocol.QuickMatch:
                 QuickMatch(session, service);
@@ -161,7 +164,9 @@ public static class Program
         }
 
         ApplyAccount(session, account);
-        session.Send(GameProtocol.AuthOk, AccountPayload(account));
+        string token = accounts.CreateToken(account.Name);
+        session.Token = token;
+        session.Send(GameProtocol.AuthOk, AccountPayload(account, token));
     }
 
     private static void Login(ClientSession session, NetworkMessage message, AccountStore accounts)
@@ -194,12 +199,63 @@ public static class Program
         }
 
         ApplyAccount(session, account);
-        session.Send(GameProtocol.AuthOk, AccountPayload(account));
+        string token = accounts.CreateToken(account.Name);
+        session.Token = token;
+        session.Send(GameProtocol.AuthOk, AccountPayload(account, token));
     }
 
-    private static void Logout(ClientSession session, RoomService service)
+    /// <summary>用客户端本地保存的令牌自动登录（主界面启动与进入大厅时使用）。</summary>
+    private static void LoginByToken(ClientSession session, NetworkMessage message, AccountStore accounts)
+    {
+        if (session.RoomCode is not null)
+        {
+            session.Send(GameProtocol.Error, ErrorPayload("对局中不能登录，请先离开房间"));
+            return;
+        }
+
+        if (session.Nickname is not null)
+        {
+            // 已登录，直接回一次账号信息，便于客户端刷新界面
+            Account? current = accounts.Get(session.Nickname);
+            if (current is not null)
+            {
+                ApplyAccount(session, current);
+                session.Send(GameProtocol.AuthOk, AccountPayload(current, session.Token ?? string.Empty));
+                return;
+            }
+
+            session.Send(GameProtocol.AuthFail, ErrorPayload("登录状态已失效，请重新登录"));
+            return;
+        }
+
+        string? token = GameProtocol.GetString(message, "token");
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            session.Send(GameProtocol.AuthFail, ErrorPayload("登录状态无效，请重新登录"));
+            return;
+        }
+
+        Account? account = accounts.ResolveToken(token, out string error);
+        if (account is null)
+        {
+            session.Send(GameProtocol.AuthFail, ErrorPayload(error));
+            return;
+        }
+
+        ApplyAccount(session, account);
+        session.Token = token;
+        session.Send(GameProtocol.AuthOk, AccountPayload(account, token));
+    }
+
+    private static void Logout(ClientSession session, RoomService service, AccountStore accounts)
     {
         service.LeavePool(session);
+        if (session.Token is not null)
+        {
+            accounts.DeleteToken(session.Token);
+            session.Token = null;
+        }
+
         session.Nickname = null;
         session.Wins = 0;
         session.Losses = 0;
@@ -215,14 +271,15 @@ public static class Program
         session.Draws = account.Draws;
     }
 
-    private static Dictionary<string, object?> AccountPayload(Account account)
+    private static Dictionary<string, object?> AccountPayload(Account account, string token)
         => new()
         {
             ["user"] = account.Name,
             ["wins"] = account.Wins,
             ["losses"] = account.Losses,
             ["draws"] = account.Draws,
-            ["rate"] = Math.Round(account.WinRate * 100)
+            ["rate"] = Math.Round(account.WinRate * 100),
+            ["token"] = token
         };
 
     // ---------- 匹配 ----------

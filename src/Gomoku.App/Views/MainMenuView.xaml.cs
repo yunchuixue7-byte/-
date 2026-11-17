@@ -1,3 +1,4 @@
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using Gomoku.App;
@@ -6,23 +7,175 @@ using Gomoku.Core.Game;
 
 namespace Gomoku.App.Views;
 
-/// <summary>主菜单视图：国风启动界面，点击棋子按钮进入对应模式。</summary>
+/// <summary>主菜单视图：国风启动界面，点击棋子按钮进入对应模式；右上角可登录账号。</summary>
 public partial class MainMenuView : UserControl
 {
     private MainWindow? _window;
     private bool _isRestoring;
+    private bool _active;
 
     public MainMenuView()
     {
         InitializeComponent();
         Loaded += OnLoaded;
-        Unloaded += (_, _) => UnsubscribeFullScreen();
+        Unloaded += (_, _) =>
+        {
+            _active = false;
+            UnsubscribeFullScreen();
+        };
     }
 
     private void OnLoaded(object sender, RoutedEventArgs e)
     {
+        _active = true;
         SubscribeFullScreen();
+        AccountSession.Load();
+        ServerBox.Text = AccountSession.Server;
         RestoreSettings();
+        UpdateAccountUi();
+        _ = TryRestoreSession();
+    }
+
+    /// <summary>启动时若本地存有登录令牌，自动连服务器恢复登录态（服务端没开时退回游客，不报错阻塞界面）。</summary>
+    private async Task TryRestoreSession()
+    {
+        if (!AccountSession.IsLoggedIn)
+        {
+            return;
+        }
+
+        string expectedUser = AccountSession.User!;
+        AccountText.Text = $"{expectedUser} · 正在恢复登录…";
+
+        AuthOutcome outcome = await AccountSession.RestoreAsync(AccountSession.Server, AccountSession.Token!);
+        if (!_active || AccountSession.User != expectedUser)
+        {
+            return; // 期间用户已手动登录/退出，或在已离开主菜单
+        }
+
+        if (outcome.Ok && outcome.Info is not null)
+        {
+            AccountSession.Apply(outcome.Info);
+            RestoreSettings();
+        }
+        else if (outcome.CredentialInvalid)
+        {
+            AccountSession.Clear();
+        }
+
+        UpdateAccountUi();
+    }
+
+    /// <summary>刷新右上角账号文案：游客或"昵称 · 战绩 · 胜率"。</summary>
+    private void UpdateAccountUi()
+    {
+        if (AccountSession.IsLoggedIn)
+        {
+            AccountText.Text = $"{AccountSession.User} · {AccountSession.Wins}胜{AccountSession.Losses}负"
+                + $"{AccountSession.Draws}平 · 胜率{AccountSession.Rate}%";
+            AccountButton.Content = "退出登录";
+            return;
+        }
+
+        AccountText.Text = "游客 · 战绩不保存";
+        AccountButton.Content = "登录 / 注册";
+    }
+
+    private async void Account_Click(object sender, RoutedEventArgs e)
+    {
+        if (AccountSession.IsLoggedIn)
+        {
+            await LogoutAsync();
+            return;
+        }
+
+        ServerBox.Text = AccountSession.Server;
+        LoginStatus.Text = string.Empty;
+        ColorPickPanel.Visibility = Visibility.Collapsed;
+        LoginPanel.Visibility = Visibility.Visible;
+        UserBox.Focus();
+    }
+
+    /// <summary>退出登录：通知服务器作废令牌、清本地会话、切回游客设置与游客界面偏好。</summary>
+    private async Task LogoutAsync()
+    {
+        AccountText.Text = "正在退出登录…";
+        AccountButton.IsEnabled = false;
+        try
+        {
+            await AccountSession.NotifyLogoutAsync();
+            AccountSession.Clear();
+            if (_active)
+            {
+                RestoreSettings();
+                UpdateAccountUi();
+            }
+        }
+        finally
+        {
+            AccountButton.IsEnabled = true;
+        }
+    }
+
+    private async void DoLogin_Click(object sender, RoutedEventArgs e) => await SubmitAsync(false);
+
+    private async void DoRegister_Click(object sender, RoutedEventArgs e) => await SubmitAsync(true);
+
+    private async Task SubmitAsync(bool register)
+    {
+        string server = ServerBox.Text.Trim();
+        string user = UserBox.Text.Trim();
+        string password = PassBox.Password;
+
+        if (user.Length == 0 || password.Length == 0)
+        {
+            LoginStatus.Text = "请输入用户名和密码";
+            return;
+        }
+
+        if (!AccountSession.TryParseServer(server, out _, out _))
+        {
+            LoginStatus.Text = "服务器地址格式应为 主机:端口，例如 127.0.0.1:9527";
+            return;
+        }
+
+        LoginButton.IsEnabled = false;
+        RegisterButton.IsEnabled = false;
+        LoginStatus.Text = register ? "正在注册…" : "正在登录…";
+        try
+        {
+            AuthOutcome outcome = await AccountSession.SignInAsync(server, user, password, register);
+            if (!_active)
+            {
+                return;
+            }
+
+            if (!outcome.Ok || outcome.Info is null)
+            {
+                LoginStatus.Text = outcome.Message;
+                return;
+            }
+
+            AccountSession.Server = server;
+            AccountSession.Apply(outcome.Info);
+            LoginPanel.Visibility = Visibility.Collapsed;
+            UserBox.Text = string.Empty;
+            PassBox.Password = string.Empty;
+            LoginStatus.Text = string.Empty;
+            RestoreSettings();
+            UpdateAccountUi();
+        }
+        finally
+        {
+            LoginButton.IsEnabled = true;
+            RegisterButton.IsEnabled = true;
+        }
+    }
+
+    private void LoginCancel_Click(object sender, RoutedEventArgs e)
+    {
+        LoginPanel.Visibility = Visibility.Collapsed;
+        LoginStatus.Text = string.Empty;
     }
 
     /// <summary>启动时恢复记忆的 AI 难度、棋盘材质与背景选择（旧版单一棋盘风格自动迁移）。</summary>

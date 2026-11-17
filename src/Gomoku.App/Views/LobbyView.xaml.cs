@@ -7,7 +7,7 @@ using Gomoku.Core.Networking;
 namespace Gomoku.App.Views;
 
 /// <summary>
-/// 联机大厅：连接服务器、注册登录、快速匹配，或创建/按房号加入房间。
+/// 联机大厅：连接服务器、用主界面已登录的账号自动认证、快速匹配，或创建/按房号加入房间。
 /// 收到 start_game 后把连接交给对局界面，由 GameBoardView 继续收发棋步。
 /// </summary>
 public partial class LobbyView : UserControl
@@ -19,8 +19,9 @@ public partial class LobbyView : UserControl
     private int _color = -1;
     private bool _enteredGame;
     private bool _matching;
-    private string? _nickname;
+    private bool _tokenSent;
     private string? _opponentName;
+    private TaskCompletionSource<bool>? _authGate;
 
     public LobbyView()
     {
@@ -28,6 +29,8 @@ public partial class LobbyView : UserControl
         AttachClient();
         Loaded += (_, _) =>
         {
+            ServerBox.Text = AccountSession.Server;
+            UpdateAccountText();
             ServerBox.Focus();
             ServerBox.SelectAll();
         };
@@ -67,83 +70,23 @@ public partial class LobbyView : UserControl
         }
     }
 
-    // ---------- 账号 ----------
-
-    private async void Register_Click(object sender, RoutedEventArgs e)
+    /// <summary>回主界面登录（账号入口统一放在主菜单）。</summary>
+    private void GoLogin_Click(object sender, RoutedEventArgs e)
     {
-        if (_busy)
+        _client.Dispose();
+        if (Window.GetWindow(this) is MainWindow window)
         {
-            return;
+            window.GoBack();
         }
-
-        string user = UserBox.Text.Trim();
-        string pass = PassBox.Password;
-        if (user.Length == 0 || pass.Length == 0)
-        {
-            StatusText.Text = "请先填写用户名和密码";
-            return;
-        }
-
-        if (!await EnsureConnected())
-        {
-            return;
-        }
-
-        _busy = true;
-        StatusText.Text = "正在注册…";
-        _client.Send(GameProtocol.Register, new Dictionary<string, object?>
-        {
-            ["user"] = user,
-            ["pass"] = pass
-        });
     }
 
-    private async void Login_Click(object sender, RoutedEventArgs e)
+    /// <summary>刷新大厅里的账号状态文字。</summary>
+    private void UpdateAccountText()
     {
-        if (_busy)
-        {
-            return;
-        }
-
-        string user = UserBox.Text.Trim();
-        string pass = PassBox.Password;
-        if (user.Length == 0 || pass.Length == 0)
-        {
-            StatusText.Text = "请先填写用户名和密码";
-            return;
-        }
-
-        if (!await EnsureConnected())
-        {
-            return;
-        }
-
-        _busy = true;
-        StatusText.Text = "正在登录…";
-        _client.Send(GameProtocol.Login, new Dictionary<string, object?>
-        {
-            ["user"] = user,
-            ["pass"] = pass
-        });
-    }
-
-    private void Logout_Click(object sender, RoutedEventArgs e)
-    {
-        if (_client.IsConnected)
-        {
-            _client.Send(GameProtocol.Logout);
-        }
-
-        ApplyLoggedOut();
-        StatusText.Text = "已退出登录，当前为游客身份";
-    }
-
-    private void ApplyLoggedOut()
-    {
-        _nickname = null;
-        LogoutButton.Visibility = Visibility.Collapsed;
-        UserBox.IsEnabled = true;
-        AccountText.Text = "当前以游客身份对战，战绩不会保存";
+        AccountText.Text = AccountSession.IsLoggedIn
+            ? $"当前账号：{AccountSession.User} · {AccountSession.Wins}胜{AccountSession.Losses}负"
+                + $"{AccountSession.Draws}平 · 胜率{AccountSession.Rate}%"
+            : "当前账号：游客（战绩不保存）";
     }
 
     // ---------- 匹配 ----------
@@ -227,7 +170,7 @@ public partial class LobbyView : UserControl
         });
     }
 
-    /// <summary>解析服务器地址（host:port 或纯端口），并建立连接。</summary>
+    /// <summary>解析服务器地址并建立连接；连接成功后用本地令牌自动恢复登录态。</summary>
     private async Task<bool> EnsureConnected()
     {
         if (_client.IsConnected)
@@ -260,14 +203,41 @@ public partial class LobbyView : UserControl
         try
         {
             await _client.ConnectAsync(host, port);
+            AccountSession.Server = address;
             StatusText.Text = "已连接服务器";
-            return true;
         }
         catch (Exception ex)
         {
             StatusText.Text = $"连接失败：{ex.Message}。请确认服务端已启动（Gomoku.Server）。";
             return false;
         }
+
+        await RestoreLoginOnConnection();
+        return true;
+    }
+
+    /// <summary>
+    /// 主界面登录过的账号，进大厅时用本地令牌在这条连接上重新认证一次（服务端的账号身份是会话级的）。
+    /// 服务端没响应或令牌失效时按游客继续，不阻塞建房/加入。
+    /// </summary>
+    private async Task RestoreLoginOnConnection()
+    {
+        if (_tokenSent || !AccountSession.IsLoggedIn)
+        {
+            UpdateAccountText();
+            return;
+        }
+
+        _tokenSent = true;
+        _authGate = new TaskCompletionSource<bool>();
+        StatusText.Text = $"正在恢复账号 {AccountSession.User}…";
+        _client.Send(GameProtocol.LoginToken, new Dictionary<string, object?>
+        {
+            ["token"] = AccountSession.Token
+        });
+
+        await Task.WhenAny(_authGate.Task, Task.Delay(2000));
+        _authGate = null;
     }
 
     /// <summary>服务器消息回到界面线程处理。</summary>
@@ -280,27 +250,31 @@ public partial class LobbyView : UserControl
         {
             case GameProtocol.AuthOk:
             {
-                _nickname = GameProtocol.GetString(message, "user");
+                string? user = GameProtocol.GetString(message, "user");
                 int wins = GameProtocol.GetInt(message, "wins");
                 int losses = GameProtocol.GetInt(message, "losses");
                 int draws = GameProtocol.GetInt(message, "draws");
-                int rate = GameProtocol.GetInt(message, "rate");
-                AccountText.Text = $"{_nickname}：{wins} 胜 {losses} 负 {draws} 平，胜率 {rate}%";
-                LogoutButton.Visibility = Visibility.Visible;
-                UserBox.IsEnabled = false;
-                PassBox.Password = string.Empty;
-                StatusText.Text = "登录成功，可以快速匹配或建房了";
+
+                if (user is not null && user == AccountSession.User)
+                {
+                    AccountSession.UpdateStats(wins, losses, draws);
+                    UpdateAccountText();
+                    StatusText.Text = $"已恢复账号 {user}，可以快速匹配或建房了";
+                }
+
                 _busy = false;
+                _authGate?.TrySetResult(true);
                 break;
             }
 
             case GameProtocol.AuthFail:
-                StatusText.Text = GameProtocol.GetString(message, "message") ?? "注册或登录失败";
+                StatusText.Text = GameProtocol.GetString(message, "message") ?? "账号登录状态不可用";
                 _busy = false;
+                _authGate?.TrySetResult(true);
                 break;
 
             case GameProtocol.LoggedOut:
-                ApplyLoggedOut();
+                UpdateAccountText();
                 break;
 
             case GameProtocol.MatchWaiting:
@@ -397,6 +371,7 @@ public partial class LobbyView : UserControl
             _client.Dispose();
             _client = new GameClient();
             AttachClient();
+            _tokenSent = false;
 
             _busy = false;
             _matching = false;

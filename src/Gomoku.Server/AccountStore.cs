@@ -59,6 +59,11 @@ public sealed class AccountStore
                 reason TEXT NOT NULL,
                 ended  TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS tokens (
+                token   TEXT PRIMARY KEY,
+                name    TEXT NOT NULL,
+                created TEXT NOT NULL
+            );
             """;
         cmd.ExecuteNonQuery();
     }
@@ -166,6 +171,99 @@ public sealed class AccountStore
             return reader.Read()
                 ? new Account(name, reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2))
                 : null;
+        }
+    }
+
+    /// <summary>为账号签发一个登录令牌（客户端本地保存，用于下次启动自动登录）。</summary>
+    public string CreateToken(string name)
+    {
+        // 24 字节随机 → Base64Url，去掉 +/= 便于存 JSON 与文件名
+        string token = Convert.ToBase64String(RandomNumberGenerator.GetBytes(24))
+            .Replace('+', '-')
+            .Replace('/', '_')
+            .TrimEnd('=');
+
+        lock (_gate)
+        {
+            using SqliteConnection conn = Open();
+            using SqliteCommand insert = conn.CreateCommand();
+            insert.CommandText = "INSERT INTO tokens(token, name, created) VALUES($t, $n, $c)";
+            insert.Parameters.AddWithValue("$t", token);
+            insert.Parameters.AddWithValue("$n", name);
+            insert.Parameters.AddWithValue("$c", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"));
+            insert.ExecuteNonQuery();
+        }
+
+        return token;
+    }
+
+    /// <summary>用令牌换回账号与最新战绩；令牌无效返回 null。超过 30 天的令牌自动失效。</summary>
+    public Account? ResolveToken(string token, out string error)
+    {
+        lock (_gate)
+        {
+            using SqliteConnection conn = Open();
+            using SqliteCommand query = conn.CreateCommand();
+            query.CommandText = "SELECT name, created FROM tokens WHERE token = $t";
+            query.Parameters.AddWithValue("$t", token);
+
+            using SqliteDataReader reader = query.ExecuteReader();
+            if (!reader.Read())
+            {
+                error = "登录状态已失效，请重新登录";
+                return null;
+            }
+
+            string name = reader.GetString(0);
+            string created = reader.GetString(1);
+            reader.Close();
+
+            if (!IsRecent(created, 30))
+            {
+                DeleteTokenInternal(conn, token);
+                error = "登录状态已过期，请重新登录";
+                return null;
+            }
+
+            error = string.Empty;
+            using SqliteCommand userQuery = conn.CreateCommand();
+            userQuery.CommandText = "SELECT wins, losses, draws FROM users WHERE name = $name";
+            userQuery.Parameters.AddWithValue("$name", name);
+            using SqliteDataReader userReader = userQuery.ExecuteReader();
+            return userReader.Read()
+                ? new Account(name, userReader.GetInt32(0), userReader.GetInt32(1), userReader.GetInt32(2))
+                : null;
+        }
+    }
+
+    /// <summary>退出登录时作废令牌。</summary>
+    public void DeleteToken(string token)
+    {
+        lock (_gate)
+        {
+            using SqliteConnection conn = Open();
+            DeleteTokenInternal(conn, token);
+        }
+    }
+
+    private static void DeleteTokenInternal(SqliteConnection conn, string token)
+    {
+        using SqliteCommand cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM tokens WHERE token = $t";
+        cmd.Parameters.AddWithValue("$t", token);
+        cmd.ExecuteNonQuery();
+    }
+
+    private static bool IsRecent(string stamp, int days)
+    {
+        try
+        {
+            DateTime created = DateTime.Parse(stamp);
+            return (DateTime.Now - created).TotalDays <= days;
+        }
+        catch (FormatException)
+        {
+            return false;
         }
     }
 

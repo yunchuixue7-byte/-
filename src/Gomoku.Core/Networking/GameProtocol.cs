@@ -19,6 +19,7 @@ public static class GameProtocol
     public const string Register = "register";
     public const string Login = "login";
     public const string Logout = "logout";
+    public const string LoginToken = "login_token";
     public const string QuickMatch = "quick_match";
     public const string CancelMatch = "cancel_match";
 
