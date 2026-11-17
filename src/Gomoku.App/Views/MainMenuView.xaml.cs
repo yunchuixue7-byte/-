@@ -139,8 +139,14 @@ public partial class MainMenuView : UserControl
     private void ColorPickCancel_Click(object sender, RoutedEventArgs e)
         => ColorPickPanel.Visibility = Visibility.Collapsed;
 
+    /// <summary>联机对战：进入大厅，连接服务器后建房或加入房间。</summary>
     private void Online_Click(object sender, RoutedEventArgs e)
-        => StartGame(GameMode.Online);
+    {
+        if (Window.GetWindow(this) is MainWindow window)
+        {
+            window.Navigate(new LobbyView());
+        }
+    }
 
     private void FullScreen_Click(object sender, RoutedEventArgs e)
         => (Window.GetWindow(this) as MainWindow)?.ToggleFullScreen();

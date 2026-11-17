@@ -31,7 +31,7 @@
                 <Button x:Name="RestartButton" Content="重开" Width="70" Height="32" Click="RestartButton_Click" Margin="0,0,8,0"/>
                 <Button x:Name="ResignButton" Content="认输" Width="70" Height="32" Click="ResignButton_Click" Margin="0,0,8,0"/>
                 <Button x:Name="FullScreenButton" Content="全屏" Width="70" Height="32" Click="FullScreen_Click" ToolTip="F11 也可切换全屏" Margin="0,0,8,0"/>
-                <Button Content="测试" Width="60" Height="32" Click="DevButton_Click" ToolTip="开发者测试模块" Margin="0,0,8,0"/>
+                <Button x:Name="DevButton" Content="测试" Width="60" Height="32" Click="DevButton_Click" ToolTip="开发者测试模块" Margin="0,0,8,0"/>
                 <Button Content="退出" Width="70" Height="32" Click="Exit_Click" ToolTip="关闭游戏"/>
             </StackPanel>
         </Border>

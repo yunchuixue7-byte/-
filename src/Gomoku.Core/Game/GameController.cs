@@ -32,8 +32,7 @@ public sealed class GameController
 
     /// <summary>
     /// 当前是否允许人类玩家直接落子。
-    /// 人机模式下轮到 AI（非玩家颜色）时返回 false；本地双人与联机模式返回 true
-    /// （联机在 M4 前为临时本地试玩）。
+    /// 人机与联机模式下轮到「自己执的颜色」时才返回 true；本地双人恒为 true。
     /// </summary>
     public bool CanHumanPlace
     {
@@ -44,7 +43,7 @@ public sealed class GameController
                 return false;
             }
 
-            return Mode != GameMode.VsAi || CurrentPlayer == HumanColor;
+            return Mode == GameMode.LocalTwoPlayer || CurrentPlayer == HumanColor;
         }
     }
 
@@ -178,6 +177,26 @@ public sealed class GameController
         int resignedBy = Mode == GameMode.VsAi ? HumanColor : CurrentPlayer;
         int winnerIndex = 1 - resignedBy;
 
+        State = GameSessionState.Finished;
+        Winner = winnerIndex == 0 ? Stone.Black : Stone.White;
+        WinningLine = null;
+        IsResigned = true;
+        ResignedBy = resignedBy;
+        return true;
+    }
+
+    /// <summary>
+    /// 应用远端认输（联机模式下由服务器判定后下发给双方）：
+    /// resignedBy 为认输方颜色（0=黑，1=白），对手获胜。
+    /// </summary>
+    public bool ApplyResignBy(int resignedBy)
+    {
+        if (State != GameSessionState.Playing || resignedBy is not (0 or 1))
+        {
+            return false;
+        }
+
+        int winnerIndex = 1 - resignedBy;
         State = GameSessionState.Finished;
         Winner = winnerIndex == 0 ? Stone.Black : Stone.White;
         WinningLine = null;

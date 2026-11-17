@@ -9,6 +9,7 @@ using System.Windows.Shapes;
 using Gomoku.App;
 using Gomoku.Core.Domain.Models;
 using Gomoku.Core.Game;
+using Gomoku.Core.Networking;
 
 namespace Gomoku.App.Views;
 
@@ -47,6 +48,11 @@ public partial class GameBoardView : UserControl
     private DateTime _shiftStart;
     private double _shiftFromRow, _shiftFromCol, _shiftToRow, _shiftToCol;
 
+    // 联机对战：连接由大厅移交，落子先发服务器、收到确认后再落子
+    private readonly GameClient? _online;
+    private bool _onlinePending;
+    private bool _onlineClosed;
+
     // 动态视频背景
     private readonly string[] _videoPaths = new[]
     {
@@ -72,12 +78,25 @@ public partial class GameBoardView : UserControl
         public double X, Y, Vx, Vy, Life, MaxLife;
     }
 
-    public GameBoardView(GameController controller, string boardMaterial = "wood", bool videoBackground = false)
+    public GameBoardView(GameController controller, string boardMaterial = "wood", bool videoBackground = false, GameClient? online = null)
     {
         InitializeComponent();
         _controller = controller;
+        _online = online;
         _boardStyle = videoBackground ? "video" : boardMaterial;
         _boardMaterial = boardMaterial;
+        if (_online is not null)
+        {
+            _online.MessageReceived += OnOnlineMessage;
+            _online.ConnectionClosed += OnOnlineClosed;
+        }
+
+        // 联机对战隐藏开发者测试入口，悔棋由服务器协调（当前不支持）
+        if (_controller.Mode == GameMode.Online)
+        {
+            DevButton.Visibility = Visibility.Collapsed;
+            UndoButton.IsEnabled = false;
+        }
         Loaded += (_, _) =>
         {
             SubscribeFullScreen();
@@ -89,8 +108,27 @@ public partial class GameBoardView : UserControl
         {
             UnsubscribeFullScreen();
             StopVideoBackground();
+            DetachOnline();
         };
         Refresh();
+    }
+
+    /// <summary>断开联机：通知服务器离房并释放连接。</summary>
+    private void DetachOnline()
+    {
+        if (_online is null)
+        {
+            return;
+        }
+
+        _online.MessageReceived -= OnOnlineMessage;
+        _online.ConnectionClosed -= OnOnlineClosed;
+        if (_controller.Mode == GameMode.Online && !_onlineClosed)
+        {
+            _online.Send(GameProtocol.Leave);
+        }
+
+        _online.Dispose();
     }
 
     /// <summary>进入对局后若轮到 AI（如玩家执白、AI 执黑先手），立即触发 AI 落子。</summary>
@@ -101,6 +139,81 @@ public partial class GameBoardView : UserControl
             TryAiTurn();
         }
     }
+
+    /// <summary>联机消息在后台线程到达，切回界面线程处理。</summary>
+    private void OnOnlineMessage(object? sender, NetworkMessage message)
+        => Dispatcher.BeginInvoke(new Action(() => HandleOnlineMessage(message)));
+
+    /// <summary>处理服务器下发的棋步、重开、认输与对手离开等消息。</summary>
+    private void HandleOnlineMessage(NetworkMessage message)
+    {
+        if (!IsLoaded)
+        {
+            return;
+        }
+
+        switch (message.Type)
+        {
+            case GameProtocol.MoveApplied:
+            {
+                _onlinePending = false;
+                int row = GameProtocol.GetInt(message, "row", -1);
+                int col = GameProtocol.GetInt(message, "col", -1);
+                if (row < 0 || col < 0)
+                {
+                    return;
+                }
+
+                StatusText.Text = string.Empty;
+                _controller.ApplyMove(new Position(row, col));
+                Refresh();
+                break;
+            }
+
+            case GameProtocol.RestartApplied:
+                _onlinePending = false;
+                _controller.Restart();
+                StatusText.Text = "新的一局开始，黑方先行";
+                Refresh();
+                break;
+
+            case GameProtocol.GameOver:
+            {
+                _onlinePending = false;
+                int resignedBy = GameProtocol.GetInt(message, "resignedBy", -1);
+                if (resignedBy is 0 or 1)
+                {
+                    _controller.ApplyResignBy(resignedBy);
+                }
+
+                Refresh();
+                break;
+            }
+
+            case GameProtocol.OpponentLeft:
+                _onlineClosed = true;
+                _onlinePending = false;
+                StatusText.Text = GameProtocol.GetString(message, "message") ?? "对手已离开，本局结束";
+                break;
+
+            case GameProtocol.Error:
+                _onlinePending = false;
+                StatusText.Text = GameProtocol.GetString(message, "message") ?? "操作未成功";
+                break;
+
+            default:
+                break;
+        }
+    }
+
+    /// <summary>服务器连接断开：提示并停止接收落子。</summary>
+    private void OnOnlineClosed(object? sender, string reason)
+        => Dispatcher.BeginInvoke(new Action(() =>
+        {
+            _onlineClosed = true;
+            _onlinePending = false;
+            StatusText.Text = $"连接已断开：{reason}";
+        }));
 
     private void SubscribeFullScreen()
     {
@@ -567,8 +680,11 @@ public partial class GameBoardView : UserControl
             }
             else if (_controller.Mode == GameMode.Online)
             {
-                TurnText.Text = "联机对战 · 当前回合：" + (_controller.CurrentPlayer == 0 ? "黑棋" : "白棋");
-                StatusText.Text = "联机同步将在 M4 阶段接入，当前可临时本地试玩";
+                TurnText.Text = "联机对战 · " + (_controller.CurrentPlayer == _controller.HumanColor ? "轮到你落子" : "等待对手落子");
+                if (!_onlinePending && !_onlineClosed)
+                {
+                    StatusText.Text = string.Empty;
+                }
             }
             else
             {
@@ -859,6 +975,11 @@ public partial class GameBoardView : UserControl
     /// <summary>开始当前回合的 30 秒倒计时；仅对局进行中生效。</summary>
     private void StartTurnTimer()
     {
+        if (_controller.Mode == GameMode.Online)
+        {
+            return; // 联机不做本地倒计时：两端时钟不一致，超时自动落子也无法同步
+        }
+
         _turnTimer?.Stop();
         _remaining = TurnSeconds;
         UpdateTimerText();
@@ -1079,6 +1200,10 @@ public partial class GameBoardView : UserControl
             {
                 StatusText.Text = "AI 正在思考，请稍候";
             }
+            else if (_controller.State == GameSessionState.Playing && _controller.Mode == GameMode.Online)
+            {
+                StatusText.Text = _onlineClosed ? "连接已断开" : "等待对手落子";
+            }
             return;
         }
 
@@ -1092,7 +1217,34 @@ public partial class GameBoardView : UserControl
 
         // 窗口相对坐标 → 世界坐标
         Board board = _controller.Board;
-        MoveResult result = _controller.ApplyMove(new Position(board.ViewRow + gy, board.ViewCol + gx));
+        Position target = new(board.ViewRow + gy, board.ViewCol + gx);
+
+        // 联机模式：本地不直接落子，先交给服务器校验，确认后由 move_applied 落地
+        if (_controller.Mode == GameMode.Online)
+        {
+            if (_online is null || _onlineClosed)
+            {
+                StatusText.Text = "连接已断开，无法落子";
+                return;
+            }
+
+            if (_onlinePending)
+            {
+                StatusText.Text = "上一步还在等待服务器确认";
+                return;
+            }
+
+            _onlinePending = true;
+            StatusText.Text = "已发送落子，等待服务器确认…";
+            _online.Send(GameProtocol.Move, new Dictionary<string, object?>
+            {
+                ["row"] = target.Row,
+                ["col"] = target.Col
+            });
+            return;
+        }
+
+        MoveResult result = _controller.ApplyMove(target);
         Refresh();
         if (result == MoveResult.BoardFull)
         {
@@ -1176,6 +1328,12 @@ public partial class GameBoardView : UserControl
 
     private void UndoButton_Click(object sender, RoutedEventArgs e)
     {
+        if (_controller.Mode == GameMode.Online)
+        {
+            StatusText.Text = "联机对战暂不支持悔棋，请使用重开";
+            return;
+        }
+
         if (_aiBusy)
         {
             return; // AI 思考中不允许悔棋，避免与后台搜索冲突
@@ -1416,6 +1574,19 @@ public partial class GameBoardView : UserControl
         }
 
         _aiCts?.Cancel(); // 若 AI 正在思考，立即停止等待
+
+        // 联机：由服务器判定认输并广播给双方
+        if (_controller.Mode == GameMode.Online)
+        {
+            if (_online is not null && !_onlineClosed)
+            {
+                StatusText.Text = "已发送认输，等待服务器确认…";
+                _online.Send(GameProtocol.Resign);
+            }
+
+            return;
+        }
+
         if (_controller.Resign())
         {
             Refresh();
@@ -1454,6 +1625,22 @@ public partial class GameBoardView : UserControl
 
         BoardFullPanel.Visibility = Visibility.Collapsed;
         DevPanel.Visibility = Visibility.Collapsed;
+
+        // 联机：请求服务器重开，双方收到 restart_applied 后一起清盘
+        if (_controller.Mode == GameMode.Online)
+        {
+            if (_online is null || _onlineClosed)
+            {
+                StatusText.Text = "连接已断开，无法重开";
+                return;
+            }
+
+            _onlinePending = false;
+            StatusText.Text = "已发送重开请求，等待服务器确认…";
+            _online.Send(GameProtocol.Restart);
+            return;
+        }
+
         if (_controller.Restart())
         {
             Refresh();
